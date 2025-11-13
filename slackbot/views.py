@@ -28,11 +28,12 @@ def _remember_summary(
     generated_for: dt.date | None,
     model_used: str,
     metadata: Dict[str, Any] | None = None,
+    mem0_user_id: str | None = None,
 ):
     """Send the generated summary to mem0.ai if it is configured."""
 
     try:
-        memory = SummaryMemory()
+        memory = SummaryMemory(user_id=mem0_user_id)
     except RuntimeError as exc:  # pragma: no cover - misconfiguration warning
         logger.warning("mem0 memory is configured incorrectly: %s", exc)
         return
@@ -111,6 +112,7 @@ class SlackEventView(APIView):
                 "thread_ts": thread_ts,
                 "source": "app_mention",
             },
+            mem0_user_id=event.get("team") or event.get("team_id"),
         )
         return summary
 
@@ -163,6 +165,7 @@ class ChannelSummaryView(APIView):
                 "source": "channel-summary-endpoint",
                 "scope": scope_text,
             },
+            mem0_user_id=serializer.validated_data.get("mem0_user_id"),
         )
         return Response({"summary": record.summary_text, "model": record.model_used})
 
@@ -204,6 +207,7 @@ class ThreadSummaryView(APIView):
                 "thread_ts": thread_ts,
                 "source": "thread-summary-endpoint",
             },
+            mem0_user_id=serializer.validated_data.get("mem0_user_id"),
         )
         return Response({"summary": record.summary_text, "model": record.model_used})
 
