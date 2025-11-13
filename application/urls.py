@@ -1,4 +1,4 @@
-"""URL configuration for lumobot."""
+"""URL configuration for application."""
 from django.contrib import admin
 from django.urls import include, path
 

@@ -109,7 +109,7 @@ python manage.py test
 ```
 Lumo
 ├── manage.py
-├── lumobot/        # Django 项目配置
+├── application/        # Django 项目配置
 ├── slackbot/       # 业务逻辑 (API、服务、模型)
 └── requirements.txt
 ```

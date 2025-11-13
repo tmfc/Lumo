@@ -1,4 +1,4 @@
-"""Django settings for the lumobot project."""
+"""Django settings for the application project."""
 from __future__ import annotations
 
 import os
@@ -35,7 +35,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = "lumobot.urls"
+ROOT_URLCONF = "application.urls"
 
 TEMPLATES = [
     {
@@ -53,8 +53,8 @@ TEMPLATES = [
     }
 ]
 
-WSGI_APPLICATION = "lumobot.wsgi.application"
-ASGI_APPLICATION = "lumobot.asgi.application"
+WSGI_APPLICATION = "application.wsgi.application"
+ASGI_APPLICATION = "application.asgi.application"
 
 DATABASES = {
     "default": {

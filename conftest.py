@@ -1,6 +1,6 @@
 import os
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "lumobot.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "application.settings")
 
 import django
 from django.core.management import call_command
