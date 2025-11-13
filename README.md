@@ -30,6 +30,9 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 | `SLACK_SIGNING_SECRET` | 验证 Slack 请求使用 |
 | `LITELLM_MODEL` | LiteLLM 使用的模型名称，例如 `gpt-4o-mini` |
 | `SLACK_SUMMARY_MAX_MESSAGES` | 每次拉取的最大消息条数 |
+| `MEM0_API_KEY` | （可选）mem0.ai 的 API Key，用于开启总结记忆功能 |
+| `MEM0_DEFAULT_USER_ID` | （可选）mem0.ai 用户 ID，默认 `lumo-slackbot` |
+| `MEM0_BASE_URL` | （可选）自建 mem0 服务地址，例如 `https://mem0.yourdomain.com` |
 
 > LiteLLM 需要配置对应模型供应商的 API Key，例如 `OPENAI_API_KEY`，配置方式详见 [LiteLLM 文档](https://docs.litellm.ai/).
 
@@ -90,3 +93,21 @@ Lumo
 - `slackbot/views.py`：DRF API 视图，处理事件及总结请求。
 
 欢迎根据业务需求扩展消息持久化、身份认证以及定时调度任务。
+
+## 开启记忆功能（mem0.ai）
+
+项目集成了 [mem0.ai](https://mem0.ai/) 作为总结记忆存储。配置步骤：
+
+1. 安装依赖（可选）：
+   ```bash
+   pip install mem0ai
+   ```
+2. 配置环境变量：
+   ```bash
+   export MEM0_API_KEY="your_mem0_api_key"
+   export MEM0_DEFAULT_USER_ID="lumo-slackbot"
+   # 如果你使用 self-host 的 mem0 服务，设置 base url
+   export MEM0_BASE_URL="https://mem0.yourdomain.com"
+   ```
+
+配置完成后，所有通过机器人生成的总结会自动写入 mem0（无论是官方云还是自建服务），方便检索与长期记忆。

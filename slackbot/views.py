@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Any, Dict
 
 from django.conf import settings
@@ -12,8 +13,38 @@ from rest_framework.views import APIView
 
 from .models import ConversationSummary
 from .serializers import ChannelSummarySerializer, SlackEventSerializer, ThreadSummarySerializer
+from .services.memory import SummaryMemory
 from .services.slack_client import SlackClient
 from .services.summarizer import Summarizer, build_summary_prompt
+
+logger = logging.getLogger(__name__)
+
+
+def _remember_summary(
+    *,
+    summary_text: str,
+    target_type: str,
+    target_id: str,
+    generated_for: dt.date | None,
+    model_used: str,
+    metadata: Dict[str, Any] | None = None,
+):
+    """Send the generated summary to mem0.ai if it is configured."""
+
+    try:
+        memory = SummaryMemory()
+    except RuntimeError as exc:  # pragma: no cover - misconfiguration warning
+        logger.warning("mem0 memory is configured incorrectly: %s", exc)
+        return
+
+    memory.remember_summary(
+        summary_text=summary_text,
+        target_type=target_type,
+        target_id=target_id,
+        generated_for=generated_for,
+        model_used=model_used,
+        metadata=metadata,
+    )
 
 
 class SlackEventView(APIView):
@@ -61,12 +92,25 @@ class SlackEventView(APIView):
 
         summary = summarizer.summarize(prompt)
         slack_client.post_message(channel, summary, thread_ts=thread_ts)
-        ConversationSummary.objects.create(
+        generated_for = timezone.now().date()
+        record = ConversationSummary.objects.create(
             target_type="thread" if thread_ts else "channel",
             target_id=thread_ts or channel,
             summary_text=summary,
-            generated_for=timezone.now().date(),
+            generated_for=generated_for,
             model_used=summarizer.model,
+        )
+        _remember_summary(
+            summary_text=record.summary_text,
+            target_type=record.target_type,
+            target_id=record.target_id,
+            generated_for=record.generated_for,
+            model_used=record.model_used,
+            metadata={
+                "channel_id": channel,
+                "thread_ts": thread_ts,
+                "source": "app_mention",
+            },
         )
         return summary
 
@@ -100,12 +144,25 @@ class ChannelSummaryView(APIView):
         transcript = build_summary_prompt(messages, scope_text)
         summary = summarizer.summarize(transcript)
 
+        generated_for = target_date or start_dt.date()
         record = ConversationSummary.objects.create(
             target_type="channel",
             target_id=channel_id,
             summary_text=summary,
-            generated_for=target_date or start_dt.date(),
+            generated_for=generated_for,
             model_used=summarizer.model,
+        )
+        _remember_summary(
+            summary_text=record.summary_text,
+            target_type=record.target_type,
+            target_id=record.target_id,
+            generated_for=record.generated_for,
+            model_used=record.model_used,
+            metadata={
+                "channel_id": channel_id,
+                "source": "channel-summary-endpoint",
+                "scope": scope_text,
+            },
         )
         return Response({"summary": record.summary_text, "model": record.model_used})
 
@@ -128,12 +185,25 @@ class ThreadSummaryView(APIView):
         transcript = build_summary_prompt(messages, "thread")
         summary = summarizer.summarize(transcript)
 
+        generated_for = timezone.now().date()
         record = ConversationSummary.objects.create(
             target_type="thread",
             target_id=thread_ts,
             summary_text=summary,
-            generated_for=timezone.now().date(),
+            generated_for=generated_for,
             model_used=summarizer.model,
+        )
+        _remember_summary(
+            summary_text=record.summary_text,
+            target_type=record.target_type,
+            target_id=record.target_id,
+            generated_for=record.generated_for,
+            model_used=record.model_used,
+            metadata={
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "source": "thread-summary-endpoint",
+            },
         )
         return Response({"summary": record.summary_text, "model": record.model_used})
 

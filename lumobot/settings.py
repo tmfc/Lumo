@@ -94,6 +94,11 @@ SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 SLACK_DEFAULT_SUMMARY_MODEL = os.getenv("LITELLM_MODEL", "gpt-3.5-turbo")
 SLACK_SUMMARY_MAX_MESSAGES = int(os.getenv("SLACK_SUMMARY_MAX_MESSAGES", "150"))
 
+# Memory settings
+MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")
+MEM0_DEFAULT_USER_ID = os.getenv("MEM0_DEFAULT_USER_ID", "lumo-slackbot")
+MEM0_BASE_URL = os.getenv("MEM0_BASE_URL", "")
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
