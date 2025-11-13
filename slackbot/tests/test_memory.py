@@ -46,6 +46,20 @@ class SummaryMemoryTests(SimpleTestCase):
         self.assertEqual(kwargs["metadata"]["scope"], "channel")
         self.assertEqual(kwargs["metadata"]["generated_for"], "2024-05-01")
 
+    @override_settings(MEM0_API_KEY="secret", MEM0_DEFAULT_USER_ID="lumo")
+    @mock.patch("slackbot.services.memory.Mem0Memory")
+    def test_user_id_can_be_overridden(self, memory_cls):
+        client = memory_cls.return_value
+        memory = SummaryMemory(user_id="team-123")
+        memory.remember_summary(
+            summary_text="summary",
+            target_type="channel",
+            target_id="C555",
+        )
+
+        _, kwargs = client.add.call_args
+        self.assertEqual(kwargs["user_id"], "team-123")
+
     @override_settings(
         MEM0_API_KEY="secret",
         MEM0_DEFAULT_USER_ID="lumo",

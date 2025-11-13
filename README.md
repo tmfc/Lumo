@@ -31,7 +31,7 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 | `LITELLM_MODEL` | LiteLLM 使用的模型名称，例如 `gpt-4o-mini` |
 | `SLACK_SUMMARY_MAX_MESSAGES` | 每次拉取的最大消息条数 |
 | `MEM0_API_KEY` | （可选）mem0.ai 的 API Key，用于开启总结记忆功能 |
-| `MEM0_DEFAULT_USER_ID` | （可选）mem0.ai 用户 ID，默认 `lumo-slackbot` |
+| `MEM0_DEFAULT_USER_ID` | （可选）mem0.ai 用户 ID，默认 `lumo-slackbot`。也可以在 API 调用或 Slack 事件中覆盖，用于为不同 Slack 账号隔离记忆 |
 | `MEM0_BASE_URL` | （可选）自建 mem0 服务地址，例如 `https://mem0.yourdomain.com` |
 
 > LiteLLM 需要配置对应模型供应商的 API Key，例如 `OPENAI_API_KEY`，配置方式详见 [LiteLLM 文档](https://docs.litellm.ai/).
@@ -53,7 +53,8 @@ Content-Type: application/json
 {
   "channel_id": "C123",
   "date": "2024-05-01",
-  "max_messages": 100
+  "max_messages": 100,
+  "mem0_user_id": "T123"  // 覆盖默认记忆空间
 }
 ```
 
@@ -64,7 +65,8 @@ Content-Type: application/json
 
 {
   "channel_id": "C123",
-  "thread_ts": "1714567890.123456"
+  "thread_ts": "1714567890.123456",
+  "mem0_user_id": "T123"
 }
 ```
 
@@ -110,4 +112,9 @@ Lumo
    export MEM0_BASE_URL="https://mem0.yourdomain.com"
    ```
 
-配置完成后，所有通过机器人生成的总结会自动写入 mem0（无论是官方云还是自建服务），方便检索与长期记忆。
+配置完成后，所有通过机器人生成的总结会自动写入 mem0（无论是官方云还是自建服务），方便检索与长期记忆。如果你将机器人接入多个 Slack Workspace，可以：
+
+1. 通过 Slack Events Payload 中的 `team`/`team_id` 自动区分（系统已默认支持，mem0 `user_id` 会使用触发事件的 workspace）。
+2. 在手动调用 channel / thread 总结接口时传入 `mem0_user_id` 字段，覆盖默认用户 ID。
+
+这样就可以为不同的 Slack 账号维护各自独立的记忆空间。
