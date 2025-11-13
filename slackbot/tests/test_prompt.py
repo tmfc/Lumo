@@ -1,6 +1,6 @@
 from django.test import TestCase
 
-from slackbot.services.summarizer import build_summary_prompt
+from slackbot.services.summarizer import build_question_prompt, build_summary_prompt
 
 
 class BuildSummaryPromptTests(TestCase):
@@ -15,3 +15,15 @@ class BuildSummaryPromptTests(TestCase):
         self.assertIn("thread", prompt)
         self.assertIn("U1", prompt)
         self.assertIn("World", prompt)
+
+
+class BuildQuestionPromptTests(TestCase):
+    def test_includes_context_and_memories(self):
+        prompt = build_question_prompt(
+            question="What shipped today?",
+            context_text="[1] U1: Release planning",
+            memories=["Yesterday's summary", "Pending QA"],
+        )
+        self.assertIn("What shipped today?", prompt)
+        self.assertIn("Release planning", prompt)
+        self.assertIn("Yesterday's summary", prompt)
