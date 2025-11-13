@@ -14,8 +14,8 @@ from rest_framework.views import APIView
 from .models import ConversationSummary
 from .serializers import ChannelSummarySerializer, SlackEventSerializer, ThreadSummarySerializer
 from .services.memory import SummaryMemory
-from .services.slack_client import SlackClient
-from .services.summarizer import Summarizer, build_summary_prompt
+from .services.slack_client import SlackClient, format_messages_for_prompt
+from .services.summarizer import Summarizer, build_question_prompt, build_summary_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +68,14 @@ class SlackEventView(APIView):
         return Response({"ok": True})
 
     def _handle_app_mention(self, event: Dict[str, Any]) -> str:
+        text = event.get("text", "")
+        if "summary" in text.lower():
+            return self._handle_summary_request(event)
+        return self._answer_question(event)
+
+    def _handle_summary_request(self, event: Dict[str, Any]) -> str:
         channel = event.get("channel")
         thread_ts = event.get("thread_ts")
-        text = event.get("text", "")
-        if "summary" not in text.lower():
-            return "Mention received but no summary requested."
 
         slack_client = SlackClient()
         summarizer = Summarizer()
@@ -115,6 +118,46 @@ class SlackEventView(APIView):
             mem0_user_id=event.get("team") or event.get("team_id"),
         )
         return summary
+
+    def _answer_question(self, event: Dict[str, Any]) -> str:
+        channel = event.get("channel")
+        thread_ts = event.get("thread_ts")
+        question_text = event.get("text", "")
+
+        slack_client = SlackClient()
+        summarizer = Summarizer()
+
+        now = timezone.now()
+        context_start = now - dt.timedelta(hours=24)
+        messages = slack_client.fetch_channel_messages(
+            channel,
+            start=context_start,
+            end=now,
+            limit=settings.SLACK_SUMMARY_MAX_MESSAGES,
+        )
+        context_text = format_messages_for_prompt(messages)
+
+        target_type = "thread" if thread_ts else "channel"
+        target_id = thread_ts or channel
+        recent_memories = list(
+            ConversationSummary.objects.filter(target_type=target_type, target_id=target_id)
+            .order_by("-created_at")
+            .values_list("summary_text", flat=True)[:5]
+        )
+
+        prompt = build_question_prompt(
+            question=question_text,
+            context_text=context_text,
+            memories=recent_memories,
+        )
+        instruction = (
+            "You are a helpful assistant for the Lumo Slack bot project. "
+            "Answer the user's question using the provided Slack context and project memories. "
+            "If the answer cannot be determined, say you are unsure instead of guessing."
+        )
+        answer = summarizer.summarize(prompt, instruction=instruction)
+        slack_client.post_message(channel, answer, thread_ts=thread_ts)
+        return answer
 
 
 class ChannelSummaryView(APIView):

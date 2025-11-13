@@ -1,7 +1,7 @@
 """Utilities that talk to LiteLLM for summarization."""
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from django.conf import settings
 
@@ -49,4 +49,32 @@ def build_summary_prompt(messages: Iterable[dict], scope_description: str) -> st
         text = entry.get("text", "")
         timestamp = entry.get("ts", "")
         lines.append(f"- ({timestamp}) {user}: {text}")
+    return "\n".join(lines)
+
+
+def build_question_prompt(
+    *,
+    question: str,
+    context_text: str | None = None,
+    memories: Sequence[str] | None = None,
+) -> str:
+    """Create a prompt that instructs the model to answer a question."""
+
+    sanitized_question = question.strip()
+    lines = [
+        "You are answering a Slack question about the Lumo Slack bot project.",
+        "Respond using the provided Slack context and project memory snippets.",
+        f"Question: {sanitized_question}",
+    ]
+
+    if context_text:
+        lines.append("\nRecent Slack context:\n")
+        lines.append(context_text.strip())
+
+    if memories:
+        lines.append("\nProject memory snippets:\n")
+        for idx, memory in enumerate(memories, start=1):
+            lines.append(f"{idx}. {memory.strip()}")
+
+    lines.append("\nAnswer:")
     return "\n".join(lines)
