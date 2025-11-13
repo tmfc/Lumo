@@ -22,6 +22,30 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
    python manage.py runserver 0.0.0.0:8000
    ```
 
+## 使用 Docker Compose（uv、mem0 自建 + 向量存储）
+
+项目内置了 `docker-compose.yml` 与 `Dockerfile`，默认使用 [uv](https://docs.astral.sh/uv/) 来安装依赖并运行 Django。
+组合服务包含：
+
+- `bot`：Lumo Slack Bot，本地端口 `8000`。
+- `mem0`：自建 mem0 服务器，本地端口 `8100`。
+- `qdrant`：mem0 需要的向量存储，使用官方 `qdrant/qdrant` 镜像并持久化到 `qdrant_data` 卷。
+
+使用方式：
+
+1. 准备 `.env`，包含原本运行机器人所需的 Slack、LiteLLM、mem0 变量（`MEM0_API_KEY`、`MEM0_DEFAULT_USER_ID` 等）。`docker compose` 会自动加载该文件，并将 `MEM0_BASE_URL` 指向容器内的 mem0 服务。
+2. （可选）如需为 Qdrant 设置 API Key，可在 `.env` 中加入 `QDRANT_API_KEY=<your-key>`，Compose 会自动透传给 mem0。
+3. 启动全部服务：
+   ```bash
+   docker compose up --build
+   ```
+   首次启动会在 `bot` 容器内执行 `uv run python manage.py migrate` 并拉起开发服务器。
+4. 访问接口：
+   - Slack bot API: http://localhost:8000/
+   - mem0 API: http://localhost:8100/
+
+若需要停止服务，执行 `docker compose down`；若希望清理向量存储数据，可同时加上 `-v` 删除 `qdrant_data` 卷。
+
 ## 必填环境变量
 | 变量 | 描述 |
 | --- | --- |
