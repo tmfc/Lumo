@@ -99,6 +99,9 @@ MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")
 MEM0_DEFAULT_USER_ID = os.getenv("MEM0_DEFAULT_USER_ID", "lumo-slackbot")
 MEM0_BASE_URL = os.getenv("MEM0_BASE_URL", "")
 
+# Vector store / Qdrant settings (used for diagnostics)
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",

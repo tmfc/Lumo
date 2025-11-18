@@ -3,3 +3,4 @@ djangorestframework>=3.14
 slack_sdk>=3.27
 litellm>=1.35
 python-dotenv>=1.0
+langchain-openai>=1.0.3

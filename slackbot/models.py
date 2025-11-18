@@ -4,6 +4,16 @@ from __future__ import annotations
 from django.db import models
 
 
+class ProcessedSlackEvent(models.Model):
+    """Tracks Slack Events API event_ids we've already handled."""
+
+    event_id = models.CharField(max_length=100, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.event_id
+
+
 class ConversationSummary(models.Model):
     """Stores the latest summary for a Slack thread or channel."""
 

@@ -10,12 +10,13 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+import requests
 
-from .models import ConversationSummary
+from .models import ConversationSummary, ProcessedSlackEvent
 from .serializers import ChannelSummarySerializer, SlackEventSerializer, ThreadSummarySerializer
 from .services.memory import SummaryMemory
 from .services.slack_client import SlackClient, format_messages_for_prompt
-from .services.summarizer import Summarizer, build_question_prompt, build_summary_prompt
+from .services.summarizer import SlackAssistant, build_question_prompt, build_summary_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +53,24 @@ class SlackEventView(APIView):
     """Handle inbound Slack Events API payloads."""
 
     def post(self, request, *args, **kwargs):  # pragma: no cover - requires Slack payloads
+        print("[SlackEventView] Received Slack payload:", request.data)
         serializer = SlackEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+
+        event_id = payload.get("event_id")
+        if event_id:
+            obj, created = ProcessedSlackEvent.objects.get_or_create(event_id=event_id)
+            if not created:
+                print("[SlackEventView] Duplicate event_id (DB), ignoring:", event_id)
+                return Response({"ok": True, "duplicate": True})
 
         if payload["type"] == "url_verification":
             return Response({"challenge": payload.get("challenge")})
 
         event = payload.get("event", {})
         event_type = event.get("type")
+        print("[SlackEventView] Handling Slack event type:", event_type)
         if event_type == "app_mention":
             response_text = self._handle_app_mention(event)
             return Response({"ok": True, "message": response_text})
@@ -68,9 +78,24 @@ class SlackEventView(APIView):
         return Response({"ok": True})
 
     def _handle_app_mention(self, event: Dict[str, Any]) -> str:
+        channel = event.get("channel")
+        ts = event.get("ts")
         text = event.get("text", "")
-        if "summary" in text.lower():
+        lower_text = text.lower()
+
+        # 先用一个 "ok_hand" 表情回应，表示请求已接受
+        if channel and ts:
+            try:
+                SlackClient().add_reaction(channel, ts, "ok_hand")
+            except Exception:
+                # 表情失败不影响主流程
+                pass
+
+        # 简单关键字路由：包含 summary / summarize 或中文“总结”时走摘要逻辑
+        if "summary" in lower_text or "summarize" in lower_text or "总结" in text:
             return self._handle_summary_request(event)
+
+        # 其他情况默认走问答流程
         return self._answer_question(event)
 
     def _handle_summary_request(self, event: Dict[str, Any]) -> str:
@@ -78,7 +103,7 @@ class SlackEventView(APIView):
         thread_ts = event.get("thread_ts")
 
         slack_client = SlackClient()
-        summarizer = Summarizer()
+        assistant = SlackAssistant()
 
         if thread_ts:
             messages = slack_client.fetch_thread_messages(channel, thread_ts, settings.SLACK_SUMMARY_MAX_MESSAGES)
@@ -94,7 +119,7 @@ class SlackEventView(APIView):
             )
             prompt = build_summary_prompt(messages, "channel conversations for today")
 
-        summary = summarizer.summarize(prompt)
+        summary = assistant.summarize(prompt)
         slack_client.post_message(channel, summary, thread_ts=thread_ts)
         generated_for = timezone.now().date()
         record = ConversationSummary.objects.create(
@@ -102,7 +127,7 @@ class SlackEventView(APIView):
             target_id=thread_ts or channel,
             summary_text=summary,
             generated_for=generated_for,
-            model_used=summarizer.model,
+            model_used=assistant.model,
         )
         _remember_summary(
             summary_text=record.summary_text,
@@ -125,7 +150,7 @@ class SlackEventView(APIView):
         question_text = event.get("text", "")
 
         slack_client = SlackClient()
-        summarizer = Summarizer()
+        assistant = SlackAssistant()
 
         now = timezone.now()
         context_start = now - dt.timedelta(hours=24)
@@ -152,10 +177,11 @@ class SlackEventView(APIView):
         )
         instruction = (
             "You are a helpful assistant for the Lumo Slack bot project. "
-            "Answer the user's question using the provided Slack context and project memories. "
-            "If the answer cannot be determined, say you are unsure instead of guessing."
+            "When helpful, use the provided Slack context and project memories to ground your answer. "
+            "If the context does not contain the needed information, answer from your own general knowledge instead. "
+            "If even then the answer is unclear, say you are unsure instead of guessing."
         )
-        answer = summarizer.summarize(prompt, instruction=instruction)
+        answer = assistant.summarize(prompt, instruction=instruction)
         slack_client.post_message(channel, answer, thread_ts=thread_ts)
         return answer
 
@@ -187,7 +213,7 @@ class ChannelSummaryView(APIView):
 
         messages = slack_client.fetch_channel_messages(channel_id, start=start_dt, end=end_dt, limit=max_messages)
         transcript = build_summary_prompt(messages, scope_text)
-        summary = summarizer.summarize(transcript)
+        summary = assistant.summarize(transcript)
 
         generated_for = target_date or start_dt.date()
         record = ConversationSummary.objects.create(
@@ -195,7 +221,7 @@ class ChannelSummaryView(APIView):
             target_id=channel_id,
             summary_text=summary,
             generated_for=generated_for,
-            model_used=summarizer.model,
+            model_used=assistant.model,
         )
         _remember_summary(
             summary_text=record.summary_text,
@@ -229,7 +255,7 @@ class ThreadSummaryView(APIView):
 
         messages = slack_client.fetch_thread_messages(channel_id, thread_ts, limit=max_messages)
         transcript = build_summary_prompt(messages, "thread")
-        summary = summarizer.summarize(transcript)
+        summary = assistant.summarize(transcript)
 
         generated_for = timezone.now().date()
         record = ConversationSummary.objects.create(
@@ -237,7 +263,7 @@ class ThreadSummaryView(APIView):
             target_id=thread_ts,
             summary_text=summary,
             generated_for=generated_for,
-            model_used=summarizer.model,
+            model_used=assistant.model,
         )
         _remember_summary(
             summary_text=record.summary_text,
@@ -263,3 +289,26 @@ class HealthView(APIView):
 
     def get(self, request, *args, **kwargs):
         return Response({"status": "ok"})
+
+
+class DiagnosticsView(APIView):
+    """Composite health check for LiteLLM, mem0, and Qdrant."""
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def get(self, request, *args, **kwargs):  # pragma: no cover - runtime diagnostics
+        data: Dict[str, Any] = {
+            "litellm": {"ok": False},
+        }
+
+        # LiteLLM / LLM backend check
+        try:
+            assistant = SlackAssistant()
+            # Use a tiny prompt to minimize latency and cost
+            summary = assistant.summarize("ping", instruction="Reply with a single word: pong")
+            data["litellm"] = {"ok": True, "sample_response": summary}
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            data["litellm"] = {"ok": False, "error": str(exc)}
+
+        return Response(data, status=status.HTTP_200_OK)

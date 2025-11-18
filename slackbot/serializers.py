@@ -9,7 +9,9 @@ from rest_framework import serializers
 class SlackEventSerializer(serializers.Serializer):
     type = serializers.CharField()
     challenge = serializers.CharField(required=False)
-    event = serializers.DictField(child=serializers.CharField(), required=False)
+    # Slack's `event` field can contain nested objects, arrays and non-string values,
+    # so we accept arbitrary JSON here instead of restricting all values to strings.
+    event = serializers.DictField(required=False)
 
 
 class ChannelSummarySerializer(serializers.Serializer):

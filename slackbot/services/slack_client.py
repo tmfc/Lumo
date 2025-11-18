@@ -50,7 +50,19 @@ class SlackClient:
         payload = {"channel": channel_id, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        self.client.chat_postMessage(**payload)
+        try:
+            response = self.client.chat_postMessage(**payload)
+            print("[SlackClient] chat_postMessage OK:", response.data)
+        except Exception as exc:  # pragma: no cover - runtime diagnostics
+            print("[SlackClient] Failed to post message:", exc)
+
+    def add_reaction(self, channel_id: str, timestamp: str, name: str) -> None:
+        """Add an emoji reaction to a Slack message."""
+        try:
+            response = self.client.reactions_add(channel=channel_id, timestamp=timestamp, name=name)
+            print("[SlackClient] reactions_add OK:", response.data)
+        except Exception as exc:  # pragma: no cover - runtime diagnostics
+            print("[SlackClient] Failed to add reaction:", exc)
 
 
 def format_messages_for_prompt(messages: Iterable[dict]) -> str:
