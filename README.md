@@ -54,6 +54,7 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 | `SLACK_SIGNING_SECRET` | 验证 Slack 请求使用 |
 | `LITELLM_MODEL` | LiteLLM 使用的模型名称，例如 `gpt-4o-mini` |
 | `SLACK_SUMMARY_MAX_MESSAGES` | 每次拉取的最大消息条数 |
+| `SLACK_FILE_DOWNLOAD_DIR` | （可选）Slack 分享文件保存目录，默认 `BASE_DIR/downloads` |
 | `MEM0_API_KEY` | （可选）mem0.ai 的 API Key，用于开启总结记忆功能 |
 | `MEM0_DEFAULT_USER_ID` | （可选）mem0.ai 用户 ID，默认 `lumo-slackbot`。也可以在 API 调用或 Slack 事件中覆盖，用于为不同 Slack 账号隔离记忆 |
 | `MEM0_BASE_URL` | （可选）自建 mem0 服务地址，例如 `https://mem0.yourdomain.com` |

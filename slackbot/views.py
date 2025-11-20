@@ -94,6 +94,8 @@ class SlackEventView(APIView):
             )
             prompt = build_summary_prompt(messages, "channel conversations for today")
 
+        self._download_shared_files(slack_client, messages, event)
+
         summary = summarizer.summarize(prompt)
         slack_client.post_message(channel, summary, thread_ts=thread_ts)
         generated_for = timezone.now().date()
@@ -135,6 +137,7 @@ class SlackEventView(APIView):
             end=now,
             limit=settings.SLACK_SUMMARY_MAX_MESSAGES,
         )
+        self._download_shared_files(slack_client, messages, event)
         context_text = format_messages_for_prompt(messages)
 
         target_type = "thread" if thread_ts else "channel"
@@ -158,6 +161,16 @@ class SlackEventView(APIView):
         answer = summarizer.summarize(prompt, instruction=instruction)
         slack_client.post_message(channel, answer, thread_ts=thread_ts)
         return answer
+
+    def _download_shared_files(self, slack_client: SlackClient, messages: list[dict], event: Dict[str, Any]) -> None:
+        """Download any files shared in the current context or mention event."""
+
+        payloads: list[dict] = list(messages)
+        if event.get("files"):
+            payloads.append({"files": event["files"]})
+
+        if payloads:
+            slack_client.download_shared_files(payloads)
 
 
 class ChannelSummaryView(APIView):

@@ -93,6 +93,7 @@ SLACK_APP_TOKEN = os.getenv("SLACK_APP_TOKEN", "")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 SLACK_DEFAULT_SUMMARY_MODEL = os.getenv("LITELLM_MODEL", "gpt-3.5-turbo")
 SLACK_SUMMARY_MAX_MESSAGES = int(os.getenv("SLACK_SUMMARY_MAX_MESSAGES", "150"))
+SLACK_FILE_DOWNLOAD_DIR = os.getenv("SLACK_FILE_DOWNLOAD_DIR", str(BASE_DIR / "downloads"))
 
 # Memory settings
 MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")

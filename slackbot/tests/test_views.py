@@ -37,6 +37,7 @@ class SlackEventViewQuestionTests(TestCase):
         response = view._handle_app_mention(event)
 
         slack_client.fetch_channel_messages.assert_called_once()
+        slack_client.download_shared_files.assert_called_once()
         build_prompt.assert_called_once()
         _, kwargs = build_prompt.call_args
         assert "Discussed deployment" in kwargs["context_text"]
@@ -44,3 +45,27 @@ class SlackEventViewQuestionTests(TestCase):
         summarizer.summarize.assert_called_once()
         slack_client.post_message.assert_called_once_with("C123", "Here is the answer", thread_ts=None)
         assert response == "Here is the answer"
+
+
+class SlackEventViewFileDownloadTests(TestCase):
+    @mock.patch("slackbot.views.Summarizer")
+    @mock.patch("slackbot.views.SlackClient")
+    def test_downloads_files_shared_in_event(self, slack_client_cls, summarizer_cls):
+        slack_client = slack_client_cls.return_value
+        slack_client.fetch_channel_messages.return_value = []
+
+        summarizer = summarizer_cls.return_value
+        summarizer.summarize.return_value = "summary"
+        summarizer.model = "test-model"
+
+        event = {
+            "channel": "C456",
+            "text": "summary please",
+            "files": [{"url_private_download": "https://files.slack.com/test", "name": "doc.txt"}],
+        }
+
+        view = SlackEventView()
+        view._handle_app_mention(event)
+
+        slack_client.download_shared_files.assert_called_once_with([{"files": event["files"]}])
+        summarizer.summarize.assert_called_once()
