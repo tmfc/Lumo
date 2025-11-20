@@ -9,6 +9,9 @@ from rest_framework import serializers
 class SlackEventSerializer(serializers.Serializer):
     type = serializers.CharField()
     challenge = serializers.CharField(required=False)
+    # Slack's unique identifier for each Events API delivery. Used for idempotency
+    # in SlackEventView to avoid handling the same event multiple times.
+    event_id = serializers.CharField(required=False)
     # Slack's `event` field can contain nested objects, arrays and non-string values,
     # so we accept arbitrary JSON here instead of restricting all values to strings.
     event = serializers.DictField(required=False)
