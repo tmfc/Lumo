@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 from typing import Any, Dict
 
 from django.conf import settings
@@ -11,6 +12,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 import requests
+from llama_index.core import Document
 
 from .models import ConversationSummary, ProcessedSlackEvent
 from .serializers import ChannelSummarySerializer, SlackEventSerializer, ThreadSummarySerializer
@@ -19,6 +21,80 @@ from .services.slack_client import SlackClient, format_messages_for_prompt
 from .services.summarizer import SlackAssistant, build_question_prompt, build_summary_prompt
 
 logger = logging.getLogger(__name__)
+
+
+SLACK_DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "slack_downloads")
+
+
+def _log_and_download_slack_files(event: Dict[str, Any]) -> bool:
+    """Log Slack file objects in the event and download them to a fixed folder.
+
+    This helps verify the exact structure of Slack file payloads and stores
+    uploaded files locally under SLACK_DOWNLOAD_DIR. It also uses LlamaIndex's
+    Document as a simple way to wrap event context.
+    """
+
+    files = event.get("files") or []
+    if not files:
+        return False
+
+    # Log raw file objects for inspection
+    logger.info("[SlackEventView] Received Slack files: %s", files)
+
+    # Use LlamaIndex Document to wrap basic context (for later retrieval/analysis if desired)
+    try:
+        _ = Document(text=str(event), metadata={"source": "slack_event", "has_files": True})
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("[SlackEventView] Failed to create LlamaIndex Document for event: %s", exc)
+
+    # Ensure download directory exists
+    os.makedirs(SLACK_DOWNLOAD_DIR, exist_ok=True)
+
+    token = settings.SLACK_BOT_TOKEN
+    if not token:
+        logger.warning("[SlackEventView] SLACK_BOT_TOKEN is not set; cannot download Slack files.")
+        return
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    any_saved = False
+
+    for file_obj in files:
+        url = (
+            file_obj.get("url_private_download")
+            or file_obj.get("url_private")
+            or file_obj.get("permalink_public")
+        )
+        name = file_obj.get("name") or file_obj.get("id") or "unnamed_file"
+
+        if not url:
+            logger.info("[SlackEventView] File object has no downloadable URL: %s", file_obj)
+            continue
+
+        try:
+            logger.info("[SlackEventView] Downloading Slack file: name=%s url=%s", name, url)
+            resp = requests.get(url, headers=headers, stream=True, timeout=30)
+            resp.raise_for_status()
+
+            safe_name = "".join(c for c in name if c not in "\\/:*?\"<>|") or "downloaded_file"
+            dest_path = os.path.join(SLACK_DOWNLOAD_DIR, safe_name)
+
+            with open(dest_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            logger.info("[SlackEventView] Saved Slack file to: %s", dest_path)
+            any_saved = True
+        except Exception as exc:  # pragma: no cover - runtime only
+            logger.warning(
+                "[SlackEventView] Failed to download Slack file name=%s url=%s error=%s",
+                name,
+                url,
+                exc,
+            )
+
+    return any_saved
 
 
 def _remember_summary(
@@ -58,6 +134,10 @@ class SlackEventView(APIView):
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
 
+        # Log and download any Slack file objects present in the event
+        event_for_files = payload.get("event") or {}
+        downloaded_files = _log_and_download_slack_files(event_for_files)
+
         event_id = payload.get("event_id")
         if event_id:
             obj, created = ProcessedSlackEvent.objects.get_or_create(event_id=event_id)
@@ -71,6 +151,17 @@ class SlackEventView(APIView):
         event = payload.get("event", {})
         event_type = event.get("type")
         print("[SlackEventView] Handling Slack event type:", event_type)
+
+        # 如果成功下载了 Slack 附件，并且这是一次 app_mention，则直接回复固定文案，不再调用 LLM
+        if downloaded_files and event_type == "app_mention":
+            channel = event.get("channel")
+            ts = event.get("ts")
+            if channel and ts:
+                try:
+                    SlackClient().post_message(channel, "已成功下载你发的文件，我正在阅读中，稍后再帮你分析。", thread_ts=ts)
+                except Exception:  # pragma: no cover - 运行时故障不影响主流程
+                    pass
+            return Response({"ok": True, "downloaded_files": True})
         if event_type == "app_mention":
             response_text = self._handle_app_mention(event)
             return Response({"ok": True, "message": response_text})
