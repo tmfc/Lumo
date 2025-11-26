@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import threading
 from typing import Any, Dict
 
 from django.conf import settings
@@ -19,6 +20,7 @@ from .serializers import ChannelSummarySerializer, SlackEventSerializer, ThreadS
 from .services.memory import SummaryMemory
 from .services.slack_client import SlackClient, format_messages_for_prompt
 from .services.summarizer import SlackAssistant, build_question_prompt, build_summary_prompt
+from .services.document_indexer import index_slack_files_and_summarize, query_slack_file_context
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,7 @@ logger = logging.getLogger(__name__)
 SLACK_DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "slack_downloads")
 
 
-def _log_and_download_slack_files(event: Dict[str, Any]) -> bool:
+def _log_and_download_slack_files(event: Dict[str, Any]) -> Dict[str, Any] | bool:
     """Log Slack file objects in the event and download them to a fixed folder.
 
     This helps verify the exact structure of Slack file payloads and stores
@@ -58,6 +60,7 @@ def _log_and_download_slack_files(event: Dict[str, Any]) -> bool:
     headers = {"Authorization": f"Bearer {token}"}
 
     any_saved = False
+    downloaded_files: list[dict[str, Any]] = []
 
     for file_obj in files:
         url = (
@@ -86,6 +89,7 @@ def _log_and_download_slack_files(event: Dict[str, Any]) -> bool:
 
             logger.info("[SlackEventView] Saved Slack file to: %s", dest_path)
             any_saved = True
+            downloaded_files.append({"name": name, "path": dest_path})
         except Exception as exc:  # pragma: no cover - runtime only
             logger.warning(
                 "[SlackEventView] Failed to download Slack file name=%s url=%s error=%s",
@@ -94,7 +98,10 @@ def _log_and_download_slack_files(event: Dict[str, Any]) -> bool:
                 exc,
             )
 
-    return any_saved
+    if not any_saved:
+        return False
+
+    return {"downloaded": True, "files": downloaded_files}
 
 
 def _remember_summary(
@@ -125,6 +132,50 @@ def _remember_summary(
     )
 
 
+def _run_file_indexing_background(channel: str, ts: str, download_result: Dict[str, Any]) -> None:
+    """Run LlamaIndex indexing and summarization in a background thread.
+
+    This keeps the HTTP request fast while still sending a follow-up summary
+    message once indexing is complete.
+    """
+
+    logger.info("[_run_file_indexing_background] start: channel=%s ts=%s download_result=%s", channel, ts, download_result)
+    print("[_run_file_indexing_background] start", channel, ts, download_result)
+
+    if not (isinstance(download_result, dict) and download_result.get("downloaded")):
+        logger.info("[_run_file_indexing_background] download_result not valid, skip indexing")
+        print("[_run_file_indexing_background] invalid download_result, skip")
+        return
+
+    files = download_result.get("files") or []
+    try:
+        summary = index_slack_files_and_summarize(
+            files,
+            channel=channel,
+            thread_ts=ts,
+        )
+        logger.info("[_run_file_indexing_background] indexing finished, summary_present=%s", bool(summary))
+        print("[_run_file_indexing_background] indexing finished, summary_present=", bool(summary))
+    except Exception as exc:  # pragma: no cover - 运行时故障不影响主流程
+        logger.exception("[_run_file_indexing_background] indexing failed: %s", exc)
+        print("[_run_file_indexing_background] indexing failed", exc)
+        summary = None
+
+    if not summary:
+        logger.info("[_run_file_indexing_background] no summary generated, nothing to send")
+        print("[_run_file_indexing_background] no summary generated")
+        return
+
+    try:
+        SlackClient().post_message(channel, summary, thread_ts=ts)
+        logger.info("[_run_file_indexing_background] summary message sent to Slack")
+        print("[_run_file_indexing_background] summary message sent to Slack")
+    except Exception as exc:  # pragma: no cover - 运行时故障不影响主流程
+        logger.exception("[_run_file_indexing_background] failed to send summary message: %s", exc)
+        print("[_run_file_indexing_background] failed to send summary message", exc)
+        return
+
+
 class SlackEventView(APIView):
     """Handle inbound Slack Events API payloads."""
 
@@ -136,7 +187,7 @@ class SlackEventView(APIView):
 
         # Log and download any Slack file objects present in the event
         event_for_files = payload.get("event") or {}
-        downloaded_files = _log_and_download_slack_files(event_for_files)
+        download_result = _log_and_download_slack_files(event_for_files)
 
         event_id = payload.get("event_id")
         if event_id:
@@ -153,7 +204,7 @@ class SlackEventView(APIView):
         print("[SlackEventView] Handling Slack event type:", event_type)
 
         # 如果成功下载了 Slack 附件，并且这是一次 app_mention，则直接回复固定文案，不再调用 LLM
-        if downloaded_files and event_type == "app_mention":
+        if download_result and event_type == "app_mention":
             channel = event.get("channel")
             ts = event.get("ts")
             if channel and ts:
@@ -161,6 +212,16 @@ class SlackEventView(APIView):
                     SlackClient().post_message(channel, "已成功下载你发的文件，我正在阅读中，稍后再帮你分析。", thread_ts=ts)
                 except Exception:  # pragma: no cover - 运行时故障不影响主流程
                     pass
+
+                # 使用 LlamaIndex 对刚下载的文件进行索引和简要分析，并把结果发回同一线程
+                # 为了不阻塞当前 HTTP 请求，这里使用后台线程执行索引与摘要逻辑。
+                thread = threading.Thread(
+                    target=_run_file_indexing_background,
+                    args=(channel, ts, download_result),
+                    daemon=True,
+                )
+                thread.start()
+
             return Response({"ok": True, "downloaded_files": True})
         if event_type == "app_mention":
             response_text = self._handle_app_mention(event)
@@ -252,6 +313,19 @@ class SlackEventView(APIView):
             limit=settings.SLACK_SUMMARY_MAX_MESSAGES,
         )
         context_text = format_messages_for_prompt(messages)
+
+        # 从 LlamaIndex 中检索与当前问题相关的文档片段，作为额外上下文
+        try:
+            file_context = query_slack_file_context(
+                channel=channel,
+                thread_ts=thread_ts,
+                question=question_text,
+            )
+        except Exception:  # pragma: no cover - 运行时故障不影响主流程
+            file_context = ""
+
+        if file_context:
+            context_text = f"[File context from uploaded documents]\n{file_context}\n\n[Slack messages]\n{context_text}"
 
         target_type = "thread" if thread_ts else "channel"
         target_id = thread_ts or channel

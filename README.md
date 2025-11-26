@@ -57,8 +57,42 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 | `MEM0_API_KEY` | （可选）mem0.ai 的 API Key，用于开启总结记忆功能 |
 | `MEM0_DEFAULT_USER_ID` | （可选）mem0.ai 用户 ID，默认 `lumo-slackbot`。也可以在 API 调用或 Slack 事件中覆盖，用于为不同 Slack 账号隔离记忆 |
 | `MEM0_BASE_URL` | （可选）自建 mem0 服务地址，例如 `https://mem0.yourdomain.com` |
-
+|
 > LiteLLM 需要配置对应模型供应商的 API Key，例如 `OPENAI_API_KEY`，配置方式详见 [LiteLLM 文档](https://docs.litellm.ai/).
+
+## Slack 文档索引与 LlamaIndex 集成
+
+项目内置了基于 [LlamaIndex](https://github.com/run-llama/llama_index) 的文档索引能力，用于处理用户在 Slack 中上传的文件，并在后续对话问答中利用这些文档作为上下文。
+
+- **依赖与环境变量**
+  - 依赖已在 `requirements.txt` 中包含：`llama-index>=0.10.0`。
+  - 需要的 OpenAI 相关配置：
+    - `OPENAI_API_KEY`
+    - `OPENAI_MODEL`（例如 `gpt-4o-mini`）
+    - `OPENAI_EMBEDDING_MODEL`（例如 `text-embedding-3-small`）
+    - `OPENAI_BASE_URL`（可选，用于通过代理 / 自建网关访问 OpenAI 接口）
+
+- **文件下载与索引流程**
+  - 当用户在 Slack 中上传文件并通过 `app_mention` @ 机器人时：
+    1. `SlackEventView` 会调用 `_log_and_download_slack_files`，将附件下载到 `slack_downloads/` 目录，并记录本地路径。
+    2. 下载成功后，先向用户回复一条固定消息：
+       > 已成功下载你发的文件，我正在阅读中，稍后再帮你分析。
+    3. 随后调用 `slackbot/services/document_indexer.py` 中的 `index_slack_files_and_summarize`：
+       - 使用 LlamaIndex 读取本地文件，按「一个文件一个 Document」方式构建索引；
+       - 为所有已上传的文件维护一个**全局向量索引**；
+       - 生成简短的中文摘要，并以第二条消息的形式发回同一个 Slack 线程。
+
+- **索引的持久化存储**
+  - 所有文档索引被持久化到项目根目录下的 `llamaindex_store/` 目录中，该目录已加入 `.gitignore`，不会提交到版本库。
+  - 应用重启后，`document_indexer` 会从 `llamaindex_store/` 自动加载已有索引，继续在其基础上插入新文档并提供检索服务。
+
+- **在问答中使用文档上下文**
+  - 当用户在 Slack 中继续向机器人提问时，`SlackEventView._answer_question` 会：
+    1. 先拉取最近 24 小时的频道消息，构造原有的 Slack 对话上下文；
+    2. 调用 `query_slack_file_context`，从全局 LlamaIndex 索引中检索与当前问题最相关的文档片段；
+    3. 将检索到的文档片段与 Slack 消息上下文合并，一并发送给底层 LLM（通过 LiteLLM 调用），从而实现「结合上传文档内容进行回答」。
+
+后续如果需要按 channel / thread 进一步拆分索引或优化查询策略，可以基于 `Document` 中的 `channel`、`thread_ts` 等元数据做更细粒度的扩展。
 
 ## API 设计
 

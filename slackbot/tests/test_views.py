@@ -76,7 +76,8 @@ class SlackFileDownloadTests(TestCase):
         with open(dest_path, "rb") as f:
             assert f.read() == b"hello world"
 
-        assert downloaded is True
+        assert isinstance(downloaded, dict)
+        assert downloaded.get("downloaded") is True
         mock_get.assert_called_once()
         called_url = mock_get.call_args[0][0]
         called_headers = mock_get.call_args[1]["headers"]
@@ -98,7 +99,7 @@ class SlackEventViewDownloadShortCircuitTests(TestCase):
         mock_download,
         mock_slack_client_cls,
     ):
-        mock_download.return_value = True
+        mock_download.return_value = {"downloaded": True, "files": []}
         slack_client = mock_slack_client_cls.return_value
 
         view = SlackEventView.as_view()

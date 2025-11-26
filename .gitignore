@@ -8,3 +8,5 @@ __pycache__/
 GEMINI.md
 
 slack_downloads/
+
+llamaindex_store/
