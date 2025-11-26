@@ -2,9 +2,11 @@ import argparse
 import os
 
 from dotenv import load_dotenv
-from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
+from qdrant_client import QdrantClient
+from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex, StorageContext
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
+from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 
 load_dotenv()
@@ -42,6 +44,26 @@ def _configure_openai_models() -> None:
     Settings.llm = OpenAI(**llm_kwargs)
 
 
+def _create_qdrant_vector_store() -> QdrantVectorStore:
+    """Create a Qdrant vector store for this debug script.
+
+    环境变量：
+    - QDRANT_URL（默认 http://localhost:6333）
+    - QDRANT_API_KEY（可选）
+    - QDRANT_COLLECTION（可选，默认 "lumo_slack_documents"，与主应用保持一致）
+    """
+
+    url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    api_key = os.getenv("QDRANT_API_KEY") or None
+    collection_name = os.getenv("QDRANT_COLLECTION", "lumo_slack_documents")
+
+    print(f"[INFO] Using Qdrant URL: {url}")
+    print(f"[INFO] Using Qdrant collection: {collection_name}")
+
+    client = QdrantClient(url=url, api_key=api_key)
+    return QdrantVectorStore(client=client, collection_name=collection_name)
+
+
 def build_index(downloads_dir: str) -> VectorStoreIndex:
     _configure_openai_models()
 
@@ -54,9 +76,30 @@ def build_index(downloads_dir: str) -> VectorStoreIndex:
     if not documents:
         raise RuntimeError("No documents found in downloads directory. Put some files there and retry.")
 
-    print(f"[INFO] Loaded {len(documents)} documents, building index...")
-    index = VectorStoreIndex.from_documents(documents)
-    print("[INFO] Index built.")
+    print(f"[INFO] Loaded {len(documents)} documents.")
+
+    # 使用与主应用相同的 Qdrant 配置，便于在命令行下快速验证 Qdrant 后端。
+    vector_store = _create_qdrant_vector_store()
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    # 尝试从已有 Qdrant 集合加载索引；如失败则基于当前文档创建新索引。
+    try:
+        print("[INFO] Trying to load existing index from Qdrant...")
+        index = VectorStoreIndex.from_vector_store(
+            vector_store=vector_store,
+            storage_context=storage_context,
+        )
+        print("[INFO] Existing index loaded from Qdrant.")
+        print("[INFO] Inserting documents into existing index...")
+        # 逐个插入文档，避免传入嵌套列表导致 'list' object has no attribute 'id_'
+        for doc in documents:
+            index.insert(doc)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[WARN] Failed to load existing index from Qdrant, creating new one: {exc}")
+        print("[INFO] Building new index in Qdrant from documents...")
+        index = VectorStoreIndex.from_documents(documents, storage_context=storage_context)
+        print("[INFO] New index built and stored in Qdrant.")
+
     return index
 
 

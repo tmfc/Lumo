@@ -87,7 +87,8 @@ def _load_or_create_global_index(documents: List[Document], files: List[Dict[str
         if documents:
             logger.info("[document_indexer] inserting %d new documents into existing Qdrant index", len(documents))
             print("[document_indexer] inserting", len(documents), "documents into existing index")
-            index.insert_documents(documents)
+            for doc in documents:
+                index.insert(doc)
     else:
         # 尝试从已有的 Qdrant 集合恢复索引；如果集合为空或失败，则从当前文档创建新索引
         try:
@@ -101,7 +102,8 @@ def _load_or_create_global_index(documents: List[Document], files: List[Dict[str
             if documents:
                 logger.info("[document_indexer] inserting %d new documents into loaded Qdrant index", len(documents))
                 print("[document_indexer] inserting", len(documents), "documents into loaded index")
-                index.insert_documents(documents)
+                for doc in documents:
+                    index.insert(doc)
         except Exception as exc:
             logger.info("[document_indexer] failed to load index from Qdrant, creating new one: %s", exc)
             print("[document_indexer] creating new Qdrant index, exc=", exc)
@@ -129,16 +131,16 @@ def index_slack_files_and_summarize(
             continue
         ext = os.path.splitext(name)[1].lower()
 
-        # 针对 PDF 使用 LlamaIndex 的 SimpleDirectoryReader 进行文本抽取，
+        # 针对常见二进制文档（PDF / Office）使用 LlamaIndex 的 SimpleDirectoryReader 进行文本抽取，
         # 行为与 scripts/debug_llamaindex.py 中的调试脚本保持一致。
-        if ext == ".pdf":
+        if ext in {".pdf", ".doc", ".docx", ".xls", ".xlsx"}:
             try:
                 reader = SimpleDirectoryReader(input_files=[path])
-                pdf_docs = reader.load_data()
+                loaded_docs = reader.load_data()
             except Exception:
                 continue
 
-            for doc in pdf_docs:
+            for doc in loaded_docs:
                 meta = dict(doc.metadata or {})
                 meta.update(
                     {
