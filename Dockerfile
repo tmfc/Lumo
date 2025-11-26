@@ -1,5 +1,5 @@
 # Use Astral's uv image so dependency installation and execution are handled by uv
-FROM ghcr.io/astral-sh/uv:0.4.10-python3.11-slim
+FROM astral/uv:python3.12-bookworm-slim
 
 ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
