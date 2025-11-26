@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import logging
-from llama_index.core import Document, VectorStoreIndex, StorageContext, load_index_from_storage, Settings, SimpleDirectoryReader
+from qdrant_client import QdrantClient
+from llama_index.core import Document, VectorStoreIndex, StorageContext, Settings, SimpleDirectoryReader
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
+from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 
 @dataclass
@@ -19,14 +21,6 @@ class StoredIndex:
 
 _GLOBAL_INDEX: Optional[StoredIndex] = None
 logger = logging.getLogger(__name__)
-
-
-def _persist_dir() -> Path:
-    # 假设当前文件在项目内，向上两级到项目根
-    base_dir = Path(__file__).resolve().parents[2]
-    store_dir = base_dir / "llamaindex_store"
-    store_dir.mkdir(parents=True, exist_ok=True)
-    return store_dir
 
 
 def _configure_openai_models() -> None:
@@ -58,36 +52,63 @@ def _configure_openai_models() -> None:
     Settings.llm = OpenAI(**llm_kwargs)
 
 
+def _create_qdrant_vector_store() -> QdrantVectorStore:
+    """Create a Qdrant vector store for LlamaIndex.
+
+    使用环境变量配置 Qdrant 连接：
+    - QDRANT_URL（默认 http://localhost:6333）
+    - QDRANT_API_KEY（可选）
+    - QDRANT_COLLECTION（可选，默认 "lumo_slack_documents"）
+    """
+
+    url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    api_key = os.getenv("QDRANT_API_KEY") or None
+    collection_name = os.getenv("QDRANT_COLLECTION", "lumo_slack_documents")
+
+    client = QdrantClient(url=url, api_key=api_key)
+    return QdrantVectorStore(client=client, collection_name=collection_name)
+
+
 def _load_or_create_global_index(documents: List[Document], files: List[Dict[str, Any]]) -> VectorStoreIndex:
     global _GLOBAL_INDEX
 
     # 使用与 debug_llamaindex.py 一致的 Settings 配置 LLM 与 Embedding
     _configure_openai_models()
-    persist_dir = _persist_dir()
-    print("[document_indexer] _load_or_create_global_index persist_dir=", persist_dir, "num_docs=", len(documents))
+    vector_store = _create_qdrant_vector_store()
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    if persist_dir.exists() and any(persist_dir.iterdir()):
-        # 已有存储：加载并增量插入
-        logger.info("[document_indexer] loading existing index from %s", persist_dir)
-        print("[document_indexer] loading existing index from", persist_dir)
-        storage_context = StorageContext.from_defaults(persist_dir=str(persist_dir))
-        index = load_index_from_storage(storage_context)
+    print("[document_indexer] _load_or_create_global_index using Qdrant, num_docs=", len(documents))
+
+    index: VectorStoreIndex
+
+    # 如果内存中已有索引，直接复用并插入新文档
+    if _GLOBAL_INDEX is not None:
+        index = _GLOBAL_INDEX.index
         if documents:
-            logger.info("[document_indexer] inserting %d new documents", len(documents))
-            print("[document_indexer] inserting", len(documents), "documents")
+            logger.info("[document_indexer] inserting %d new documents into existing Qdrant index", len(documents))
+            print("[document_indexer] inserting", len(documents), "documents into existing index")
             index.insert_documents(documents)
     else:
-        # 新建索引
-        logger.info("[document_indexer] creating new index at %s with %d documents", persist_dir, len(documents))
-        print("[document_indexer] creating new index at", persist_dir, "with", len(documents), "documents")
-        print("[document_indexer] before VectorStoreIndex.from_documents")
-        index = VectorStoreIndex.from_documents(documents or [])
-        print("[document_indexer] after VectorStoreIndex.from_documents")
-
-    # 持久化最新状态
-    logger.info("[document_indexer] persisting index to %s", persist_dir)
-    print("[document_indexer] persisting index to", persist_dir)
-    index.storage_context.persist(persist_dir=str(persist_dir))
+        # 尝试从已有的 Qdrant 集合恢复索引；如果集合为空或失败，则从当前文档创建新索引
+        try:
+            logger.info("[document_indexer] trying to load index from existing Qdrant collection")
+            print("[document_indexer] before VectorStoreIndex.from_vector_store")
+            index = VectorStoreIndex.from_vector_store(
+                vector_store=vector_store,
+                storage_context=storage_context,
+            )
+            print("[document_indexer] after VectorStoreIndex.from_vector_store")
+            if documents:
+                logger.info("[document_indexer] inserting %d new documents into loaded Qdrant index", len(documents))
+                print("[document_indexer] inserting", len(documents), "documents into loaded index")
+                index.insert_documents(documents)
+        except Exception as exc:
+            logger.info("[document_indexer] failed to load index from Qdrant, creating new one: %s", exc)
+            print("[document_indexer] creating new Qdrant index, exc=", exc)
+            logger.info("[document_indexer] creating new index in Qdrant with %d documents", len(documents))
+            print("[document_indexer] before VectorStoreIndex.from_documents (Qdrant)")
+            index = VectorStoreIndex.from_documents(documents or [], storage_context=storage_context)
+            print("[document_indexer] after VectorStoreIndex.from_documents (Qdrant)")
 
     _GLOBAL_INDEX = StoredIndex(index=index, metadata={"files": files})
     return index
@@ -178,23 +199,22 @@ def query_slack_file_context(
 ) -> str:
     global _GLOBAL_INDEX
 
-    # 尝试从内存缓存拿索引
+    # 尝试从内存缓存拿索引；如果没有，则从 Qdrant 创建/恢复索引
     stored = _GLOBAL_INDEX
 
-    # 如果内存里没有，全局尝试从磁盘加载
     if stored is None:
-        persist_dir = _persist_dir()
-        if not (persist_dir.exists() and any(persist_dir.iterdir())):
-            logger.info("[document_indexer] no persisted index found at %s", persist_dir)
-            return ""
-
         _configure_openai_models()
-        storage_context = StorageContext.from_defaults(persist_dir=str(persist_dir))
+        vector_store = _create_qdrant_vector_store()
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
         try:
-            logger.info("[document_indexer] loading index from storage for query: %s", persist_dir)
-            index = load_index_from_storage(storage_context)
+            logger.info("[document_indexer] loading index from Qdrant for query")
+            print("[document_indexer] loading index from Qdrant for query")
+            index = VectorStoreIndex.from_vector_store(
+                vector_store=vector_store,
+                storage_context=storage_context,
+            )
         except Exception as exc:
-            logger.exception("[document_indexer] failed to load index from storage: %s", exc)
+            logger.exception("[document_indexer] failed to load index from Qdrant: %s", exc)
             return ""
 
         stored = _GLOBAL_INDEX = StoredIndex(index=index, metadata={})

@@ -22,19 +22,18 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
    python manage.py runserver 0.0.0.0:8000
    ```
 
-## 使用 Docker Compose（uv、mem0 自建 + 向量存储）
+## 使用 Docker Compose（uv + Qdrant 向量存储）
 
 项目内置了 `docker-compose.yml` 与 `Dockerfile`，默认使用 [uv](https://docs.astral.sh/uv/) 来安装依赖并运行 Django。
 组合服务包含：
 
 - `bot`：Lumo Slack Bot，本地端口 `8000`。
-- `mem0`：自建 mem0 服务器，本地端口 `8100`。
-- `qdrant`：mem0 需要的向量存储，使用官方 `qdrant/qdrant` 镜像并持久化到 `qdrant_data` 卷。
+- `qdrant`：向量存储服务，使用官方 `qdrant/qdrant` 镜像并持久化到 `qdrant_data` 卷。
 
 使用方式：
 
-1. 准备 `.env`，包含原本运行机器人所需的 Slack、LiteLLM、mem0 变量（`MEM0_API_KEY`、`MEM0_DEFAULT_USER_ID` 等）。`docker compose` 会自动加载该文件，并将 `MEM0_BASE_URL` 指向容器内的 mem0 服务。
-2. （可选）如需为 Qdrant 设置 API Key，可在 `.env` 中加入 `QDRANT_API_KEY=<your-key>`，Compose 会自动透传给 mem0。
+1. 准备 `.env`，包含原本运行机器人所需的 Slack、LiteLLM 变量。`docker compose` 会自动加载该文件。
+2. （可选）如需为 Qdrant 设置 API Key，可在 `.env` 中加入 `QDRANT_API_KEY=<your-key>`，Compose 会自动透传给 Qdrant 容器。
 3. 启动全部服务：
    ```bash
    docker compose up --build
@@ -42,7 +41,6 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
    首次启动会在 `bot` 容器内执行 `uv run python manage.py migrate` 并拉起开发服务器。
 4. 访问接口：
    - Slack bot API: http://localhost:8000/
-   - mem0 API: http://localhost:8100/
 
 若需要停止服务，执行 `docker compose down`；若希望清理向量存储数据，可同时加上 `-v` 删除 `qdrant_data` 卷。
 
@@ -54,10 +52,6 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 | `SLACK_SIGNING_SECRET` | 验证 Slack 请求使用 |
 | `LITELLM_MODEL` | LiteLLM 使用的模型名称，例如 `gpt-4o-mini` |
 | `SLACK_SUMMARY_MAX_MESSAGES` | 每次拉取的最大消息条数 |
-| `MEM0_API_KEY` | （可选）mem0.ai 的 API Key，用于开启总结记忆功能 |
-| `MEM0_DEFAULT_USER_ID` | （可选）mem0.ai 用户 ID，默认 `lumo-slackbot`。也可以在 API 调用或 Slack 事件中覆盖，用于为不同 Slack 账号隔离记忆 |
-| `MEM0_BASE_URL` | （可选）自建 mem0 服务地址，例如 `https://mem0.yourdomain.com` |
-|
 > LiteLLM 需要配置对应模型供应商的 API Key，例如 `OPENAI_API_KEY`，配置方式详见 [LiteLLM 文档](https://docs.litellm.ai/).
 
 ## Slack 文档索引与 LlamaIndex 集成
@@ -78,13 +72,12 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
     2. 下载成功后，先向用户回复一条固定消息：
        > 已成功下载你发的文件，我正在阅读中，稍后再帮你分析。
     3. 随后调用 `slackbot/services/document_indexer.py` 中的 `index_slack_files_and_summarize`：
-       - 使用 LlamaIndex 读取本地文件，按「一个文件一个 Document」方式构建索引；
+       - 使用 LlamaIndex 读取本地文件，按「一个文件一个 Document」方式构建索引，并将索引存储在 Qdrant 中。
        - 为所有已上传的文件维护一个**全局向量索引**；
        - 生成简短的中文摘要，并以第二条消息的形式发回同一个 Slack 线程。
 
 - **索引的持久化存储**
-  - 所有文档索引被持久化到项目根目录下的 `llamaindex_store/` 目录中，该目录已加入 `.gitignore`，不会提交到版本库。
-  - 应用重启后，`document_indexer` 会从 `llamaindex_store/` 自动加载已有索引，继续在其基础上插入新文档并提供检索服务。
+  - 所有文档向量索引会写入 Qdrant 中（默认集合名 `lumo_slack_documents`，可通过 `QDRANT_COLLECTION` 环境变量覆盖）。
 
 - **在问答中使用文档上下文**
   - 当用户在 Slack 中继续向机器人提问时，`SlackEventView._answer_question` 会：
@@ -111,8 +104,7 @@ Content-Type: application/json
 {
   "channel_id": "C123",
   "date": "2024-05-01",
-  "max_messages": 100,
-  "mem0_user_id": "T123"  // 覆盖默认记忆空间
+  "max_messages": 100
 }
 ```
 
@@ -123,8 +115,7 @@ Content-Type: application/json
 
 {
   "channel_id": "C123",
-  "thread_ts": "1714567890.123456",
-  "mem0_user_id": "T123"
+  "thread_ts": "1714567890.123456"
 }
 ```
 
@@ -153,26 +144,3 @@ Lumo
 - `slackbot/views.py`：DRF API 视图，处理事件及总结请求。
 
 欢迎根据业务需求扩展消息持久化、身份认证以及定时调度任务。
-
-## 开启记忆功能（mem0.ai）
-
-项目集成了 [mem0.ai](https://mem0.ai/) 作为总结记忆存储。配置步骤：
-
-1. 安装依赖（可选）：
-   ```bash
-   pip install mem0ai
-   ```
-2. 配置环境变量：
-   ```bash
-   export MEM0_API_KEY="your_mem0_api_key"
-   export MEM0_DEFAULT_USER_ID="lumo-slackbot"
-   # 如果你使用 self-host 的 mem0 服务，设置 base url
-   export MEM0_BASE_URL="https://mem0.yourdomain.com"
-   ```
-
-配置完成后，所有通过机器人生成的总结会自动写入 mem0（无论是官方云还是自建服务），方便检索与长期记忆。如果你将机器人接入多个 Slack Workspace，可以：
-
-1. 通过 Slack Events Payload 中的 `team`/`team_id` 自动区分（系统已默认支持，mem0 `user_id` 会使用触发事件的 workspace）。
-2. 在手动调用 channel / thread 总结接口时传入 `mem0_user_id` 字段，覆盖默认用户 ID。
-
-这样就可以为不同的 Slack 账号维护各自独立的记忆空间。

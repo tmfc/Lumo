@@ -6,29 +6,11 @@ services:
       context: .
       dockerfile: Dockerfile
     command: >-
-      sh -c "uv run python manage.py migrate && uv run python manage.py runserver 0.0.0.0:8000"
+      sh -c "uv run gunicorn application.wsgi:application --bind 0.0.0.0:8000 --workers 3"
     env_file:
       - .env
-    environment:
-      # Point the bot to the in-cluster mem0 service by default
-      MEM0_BASE_URL: http://mem0:8000
     ports:
       - "8000:8000"
-    depends_on:
-      mem0:
-        condition: service_started
-    restart: unless-stopped
-
-  mem0:
-    image: mem0ai/mem0:latest
-    environment:
-      MEM0_API_KEY: ${MEM0_API_KEY:-mem0-local}
-      MEM0_DEFAULT_USER_ID: ${MEM0_DEFAULT_USER_ID:-lumo-slackbot}
-      MEM0_VECTOR_STORE: qdrant
-      QDRANT_URL: http://qdrant:6333
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-    ports:
-      - "8100:8000"
     depends_on:
       qdrant:
         condition: service_started

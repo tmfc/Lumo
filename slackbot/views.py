@@ -17,7 +17,6 @@ from llama_index.core import Document
 
 from .models import ConversationSummary, ProcessedSlackEvent
 from .serializers import ChannelSummarySerializer, SlackEventSerializer, ThreadSummarySerializer
-from .services.memory import SummaryMemory
 from .services.slack_client import SlackClient, format_messages_for_prompt
 from .services.summarizer import SlackAssistant, build_question_prompt, build_summary_prompt
 from .services.document_indexer import index_slack_files_and_summarize, query_slack_file_context
@@ -115,21 +114,8 @@ def _remember_summary(
     mem0_user_id: str | None = None,
 ):
     """Send the generated summary to mem0.ai if it is configured."""
-
-    try:
-        memory = SummaryMemory(user_id=mem0_user_id)
-    except RuntimeError as exc:  # pragma: no cover - misconfiguration warning
-        logger.warning("mem0 memory is configured incorrectly: %s", exc)
-        return
-
-    memory.remember_summary(
-        summary_text=summary_text,
-        target_type=target_type,
-        target_id=target_id,
-        generated_for=generated_for,
-        model_used=model_used,
-        metadata=metadata,
-    )
+    # mem0 集成功能已关闭，此处保留空实现以保持向后兼容。
+    return
 
 
 def _run_file_indexing_background(channel: str, ts: str, download_result: Dict[str, Any]) -> None:
