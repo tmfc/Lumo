@@ -219,6 +219,7 @@ class SlackEventView(APIView):
         channel = event.get("channel")
         ts = event.get("ts")
         text = event.get("text", "")
+        message = event.get("message") or {}
         lower_text = text.lower()
 
         # 先用一个 "ok_hand" 表情回应，表示请求已接受
@@ -232,6 +233,10 @@ class SlackEventView(APIView):
         # 简单关键字路由：包含 summary / summarize 或中文“总结”时走摘要逻辑
         if "summary" in lower_text or "summarize" in lower_text or "总结" in text:
             return self._handle_summary_request(event)
+
+        # 当用户对某条消息使用 mention 触发机器人时，优先针对该消息内容调用问答流程
+        if isinstance(message, dict) and message.get("text"):
+            return self._answer_question(event, question_override=message.get("text", ""))
 
         # 其他情况默认走问答流程
         return self._answer_question(event)
@@ -282,10 +287,10 @@ class SlackEventView(APIView):
         )
         return summary
 
-    def _answer_question(self, event: Dict[str, Any]) -> str:
+    def _answer_question(self, event: Dict[str, Any], question_override: str | None = None) -> str:
         channel = event.get("channel")
         thread_ts = event.get("thread_ts")
-        question_text = event.get("text", "")
+        question_text = question_override or event.get("text", "")
 
         slack_client = SlackClient()
         assistant = SlackAssistant()
