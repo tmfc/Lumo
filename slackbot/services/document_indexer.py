@@ -12,6 +12,8 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
+from slackbot.services.chunker import chunk_document_with_llm
+
 
 @dataclass
 class StoredIndex:
@@ -133,11 +135,12 @@ def index_slack_files_and_summarize(
 
         # 针对常见二进制文档（PDF / Office）使用 LlamaIndex 的 SimpleDirectoryReader 进行文本抽取，
         # 行为与 scripts/debug_llamaindex.py 中的调试脚本保持一致。
-        if ext in {".pdf", ".doc", ".docx", ".xls", ".xlsx"}:
+        if ext in {".pdf", ".docx", ".xlsx"}:
             try:
                 reader = SimpleDirectoryReader(input_files=[path])
                 loaded_docs = reader.load_data()
             except Exception:
+                # 文件解析失败，直接跳过该文件
                 continue
 
             for doc in loaded_docs:
@@ -151,7 +154,62 @@ def index_slack_files_and_summarize(
                         "thread_ts": thread_ts,
                     }
                 )
-                documents.append(Document(text=doc.text, metadata=meta))
+
+                # 使用 LLM 进行语义分块，失败时回退为单一文档
+                text = getattr(doc, "text", None) or getattr(doc, "get_content", lambda: "")()
+                if not text:
+                    continue
+
+                try:
+                    chunk_result = chunk_document_with_llm(text, meta)
+                    chunk_docs = chunk_result.get("documents") or []
+                    if chunk_docs:
+                        documents.extend(chunk_docs)
+                        continue
+                except Exception as exc:
+                    logger.warning(
+                        "[document_indexer] LLM chunking failed for file %s, falling back to single document: %s",
+                        name,
+                        exc,
+                    )
+
+                # 回退：不使用 LLM 分块，直接按整篇文档索引
+                documents.append(Document(text=text, metadata=meta))
+
+        # Markdown 文件：按纯文本读取，但同样使用 LLM 语义分块
+        elif ext == ".md":
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read()
+            except Exception:
+                continue
+
+            if not text.strip():
+                continue
+
+            metadata = {
+                "source": "slack_file",
+                "file_name": name,
+                "file_path": path,
+                "channel": channel,
+                "thread_ts": thread_ts,
+            }
+
+            try:
+                chunk_result = chunk_document_with_llm(text, metadata)
+                chunk_docs = chunk_result.get("documents") or []
+                if chunk_docs:
+                    documents.extend(chunk_docs)
+                else:
+                    documents.append(Document(text=text, metadata=metadata))
+            except Exception as exc:
+                logger.warning(
+                    "[document_indexer] LLM chunking failed for markdown file %s, falling back to single document: %s",
+                    name,
+                    exc,
+                )
+                documents.append(Document(text=text, metadata=metadata))
+
         else:
             try:
                 with open(path, "r", encoding="utf-8", errors="ignore") as f:
