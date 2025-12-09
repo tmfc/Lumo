@@ -44,6 +44,17 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 
 若需要停止服务，执行 `docker compose down`；若希望清理向量存储数据，可同时加上 `-v` 删除 `qdrant_data` 卷。
 
+## MCP 文档搜索服务器
+
+项目包含一个基于 Model Context Protocol（MCP）的文档搜索服务，方便在本地用 LLM 工具调用已索引的 Slack 上传文档：
+
+1. 确保已经通过 `docker compose up` 启动了 Qdrant，并配置好 OpenAI 相关环境变量（`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_EMBEDDING_MODEL` 等）。
+2. 运行 MCP 服务器：
+   ```bash
+   python scripts/mcp_document_search_server.py
+   ```
+3. 在支持 MCP 的客户端中调用 `search` 工具，输入关键词即可返回最多 5 条匹配的文档片段（包含文本、元数据与相似度）。
+
 ## 必填环境变量
 | 变量 | 描述 |
 | --- | --- |
