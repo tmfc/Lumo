@@ -15,6 +15,17 @@ services:
       qdrant:
         condition: service_started
     restart: unless-stopped
+  
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "4173:80"
+    depends_on:
+      bot:
+        condition: service_started
+    restart: unless-stopped
 
   qdrant:
     image: qdrant/qdrant:latest

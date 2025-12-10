@@ -13,3 +13,4 @@ llama-index-vector-stores-qdrant
 model-context-protocol
 pypdf
 docx2txt
+PyJWT

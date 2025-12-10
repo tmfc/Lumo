@@ -10,6 +10,7 @@ from typing import Any, Dict
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 import requests
@@ -24,7 +25,13 @@ from .services.document_indexer import index_slack_files_and_summarize, query_sl
 logger = logging.getLogger(__name__)
 
 
-SLACK_DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "slack_downloads")
+SLACK_DOWNLOAD_DIR = str(
+    getattr(
+        settings,
+        "FILE_STORAGE_DIR",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "downloads"),
+    )
+)
 
 
 def _log_and_download_slack_files(event: Dict[str, Any]) -> Dict[str, Any] | bool:
@@ -79,7 +86,13 @@ def _log_and_download_slack_files(event: Dict[str, Any]) -> Dict[str, Any] | boo
             resp.raise_for_status()
 
             safe_name = "".join(c for c in name if c not in "\\/:*?\"<>|") or "downloaded_file"
-            dest_path = os.path.join(SLACK_DOWNLOAD_DIR, safe_name)
+            base, ext = os.path.splitext(safe_name)
+            candidate = safe_name
+            counter = 1
+            while os.path.exists(os.path.join(SLACK_DOWNLOAD_DIR, candidate)):
+                candidate = f"{base}_{counter}{ext}"
+                counter += 1
+            dest_path = os.path.join(SLACK_DOWNLOAD_DIR, candidate)
 
             with open(dest_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
@@ -135,11 +148,15 @@ def _run_file_indexing_background(channel: str, ts: str, download_result: Dict[s
 
     files = download_result.get("files") or []
     try:
-        summary = index_slack_files_and_summarize(
+        result = index_slack_files_and_summarize(
             files,
             channel=channel,
             thread_ts=ts,
         )
+        if isinstance(result, dict):
+            summary = result.get("summary")
+        else:
+            summary = result
         logger.info("[_run_file_indexing_background] indexing finished, summary_present=%s", bool(summary))
         print("[_run_file_indexing_background] indexing finished, summary_present=", bool(summary))
     except Exception as exc:  # pragma: no cover - 运行时故障不影响主流程
@@ -164,6 +181,8 @@ def _run_file_indexing_background(channel: str, ts: str, download_result: Dict[s
 
 class SlackEventView(APIView):
     """Handle inbound Slack Events API payloads."""
+
+    permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):  # pragma: no cover - requires Slack payloads
         print("[SlackEventView] Received Slack payload:", request.data)
@@ -345,6 +364,8 @@ class SlackEventView(APIView):
 class ChannelSummaryView(APIView):
     """Summarize a Slack channel for a specific day or date range."""
 
+ 
+
     def post(self, request, *args, **kwargs):
         serializer = ChannelSummarySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -397,6 +418,8 @@ class ChannelSummaryView(APIView):
 
 class ThreadSummaryView(APIView):
     """Summarize a specific Slack thread."""
+
+ 
 
     def post(self, request, *args, **kwargs):
         serializer = ThreadSummarySerializer(data=request.data)

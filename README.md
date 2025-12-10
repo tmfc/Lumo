@@ -65,6 +65,11 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 | `SLACK_SUMMARY_MAX_MESSAGES` | 每次拉取的最大消息条数 |
 > LiteLLM 需要配置对应模型供应商的 API Key，例如 `OPENAI_API_KEY`，配置方式详见 [LiteLLM 文档](https://docs.litellm.ai/).
 
+## 可选环境变量
+| 变量 | 描述 |
+| --- | --- |
+| `FILE_STORAGE_DIR` | 自定义统一的文件存储目录，默认为 `<BASE_DIR>/downloads` |
+
 ## Slack 文档索引与 LlamaIndex 集成
 
 项目内置了基于 [LlamaIndex](https://github.com/run-llama/llama_index) 的文档索引能力，用于处理用户在 Slack 中上传的文件，并在后续对话问答中利用这些文档作为上下文。
@@ -79,7 +84,7 @@ Lumo 是一个基于 **Django REST Framework**、**Slack SDK** 以及 **LiteLLM*
 
 - **文件下载与索引流程**
   - 当用户在 Slack 中上传文件并通过 `app_mention` @ 机器人时：
-    1. `SlackEventView` 会调用 `_log_and_download_slack_files`，将附件下载到 `slack_downloads/` 目录，并记录本地路径。
+    1. `SlackEventView` 会调用 `_log_and_download_slack_files`，将附件下载到统一的 `downloads/` 目录，并记录本地路径。
     2. 下载成功后，先向用户回复一条固定消息：
        > 已成功下载你发的文件，我正在阅读中，稍后再帮你分析。
     3. 随后调用 `slackbot/services/document_indexer.py` 中的 `index_slack_files_and_summarize`：
