@@ -419,7 +419,7 @@ class ChannelSummaryView(APIView):
 class ThreadSummaryView(APIView):
     """Summarize a specific Slack thread."""
 
-    permission_classes = [AllowAny]
+ 
 
     def post(self, request, *args, **kwargs):
         serializer = ThreadSummarySerializer(data=request.data)
