@@ -364,7 +364,7 @@ class SlackEventView(APIView):
 class ChannelSummaryView(APIView):
     """Summarize a Slack channel for a specific day or date range."""
 
-    permission_classes = [AllowAny]
+ 
 
     def post(self, request, *args, **kwargs):
         serializer = ChannelSummarySerializer(data=request.data)
