@@ -7,6 +7,6 @@ __pycache__/
 .vscode/
 GEMINI.md
 
-slack_downloads/
+downloads/
 
 llamaindex_store/

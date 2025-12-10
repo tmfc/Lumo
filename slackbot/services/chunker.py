@@ -3,9 +3,11 @@ import json
 import logging
 import os
 from typing import List, Dict, Any
+import re
 
 from openai import OpenAI
 from llama_index.core import Document
+from llama_index.core.node_parser import SentenceSplitter
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +17,7 @@ TOKEN_ESTIMATE_DIVISOR = int(os.getenv("TOKEN_ESTIMATE_DIVISOR", "4"))
 LLM_CHUNK_TOKEN_LIMIT = int(os.getenv("LLM_CHUNK_TOKEN_LIMIT", "20000"))
 
 # Use the model configured for the summarizer
-LLM_MODEL = "gemini/gemini-2.5-flash" #os.getenv("LITELLM_MODEL", "gemini/gemini-2.5-flash")
-
+LLM_MODEL = os.getenv("LITELLM_MODEL")
 
 SYSTEM_PROMPT = """
 You are an expert in semantic document chunking. Your task is to split a given document into meaningful, self-contained chunks.
@@ -100,7 +101,6 @@ def get_chunks_from_llm(text: str) -> Dict[str, Any]:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.1,
             response_format={"type": "json_object"},
             timeout=300, # Using a 5-minute timeout
         )
@@ -120,8 +120,11 @@ def get_chunks_from_llm(text: str) -> Dict[str, Any]:
         try:
             data = json.loads(json_str)
         except Exception as parse_err:
-            # Log the JSON string that failed to parse for easier debugging
             logger.error(f"[chunker] Failed to parse LLM JSON. Raw string: {json_str}")
+            fallback_chunks = _recover_chunks_from_invalid_json(json_str)
+            if fallback_chunks:
+                logger.warning("[chunker] Falling back to regex-based chunk extraction due to JSON decode error.")
+                return {"positions": fallback_chunks, "raw_response": response}
             raise parse_err
         
         if "chunks" not in data or not isinstance(data["chunks"], list):
@@ -178,6 +181,41 @@ def _debug_log_chunk_boundaries(text: str, positions: List[Dict[str, int]], max_
             )
     except Exception as e:
         logger.warning(f"[chunker-debug] Failed to log chunk boundaries: {e}")
+
+
+def _recover_chunks_from_invalid_json(raw_text: str) -> List[Dict[str, Any]]:
+    """Attempt to salvage chunk start/end pairs from malformed JSON strings."""
+    if not raw_text:
+        return []
+
+    # Match each {...} block that contains start/end integers
+    chunk_pattern = re.compile(
+        r"\{[^{}]*?\"start\"\s*:\s*(-?\d+)[^{}]*?\"end\"\s*:\s*(-?\d+)[^{}]*?\}",
+        re.DOTALL,
+    )
+    recovered: List[Dict[str, Any]] = []
+
+    for match in chunk_pattern.finditer(raw_text):
+        try:
+            start_value = int(match.group(1))
+            end_value = int(match.group(2))
+        except (TypeError, ValueError):
+            continue
+
+        chunk: Dict[str, Any] = {"start": start_value, "end": end_value}
+
+        # Try best-effort extraction for start_text/end_text to help recompute positions.
+        start_text_match = re.search(r'"start_text"\s*:\s*"([^"]*)"', match.group(0))
+        if start_text_match:
+            chunk["start_text"] = start_text_match.group(1)
+
+        end_text_match = re.search(r'"end_text"\s*:\s*"([^"]*)"', match.group(0))
+        if end_text_match:
+            chunk["end_text"] = end_text_match.group(1)
+
+        recovered.append(chunk)
+
+    return recovered
 
 
 def _recompute_positions_from_markers(text: str, positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -299,25 +337,30 @@ def chunk_document_with_llm(text: str, metadata: Dict[str, Any]) -> Dict[str, An
     Returns a dictionary containing the list of Document objects and total tokens used.
     """
     token_count = _estimate_token_count(text)
-    
+
     all_chunks_positions: List[Dict[str, int]] = []
     total_tokens = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    
+    use_sentence_fallback = False
+
     if token_count > LLM_CHUNK_TOKEN_LIMIT:
         logger.warning(
             f"[chunker] Document is too large ({token_count} estimated tokens > {LLM_CHUNK_TOKEN_LIMIT}). "
             f"Pre-splitting before sending to LLM."
         )
-        
+
         char_limit = LLM_CHUNK_TOKEN_LIMIT * TOKEN_ESTIMATE_DIVISOR
         text_parts = [text[i:i+char_limit] for i in range(0, len(text), char_limit)]
-        
+
         char_offset = 0
         for part in text_parts:
             result = get_chunks_from_llm(part)
+            raw_response = result.get("raw_response")
+            if not raw_response:
+                use_sentence_fallback = True
+                break
+
             # Recompute positions for this part using markers, then adjust
             part_chunks = _recompute_positions_from_markers(part, result["positions"])
-            raw_response = result["raw_response"]
 
             # Adjust chunk positions to be relative to the original document
             for chunk in part_chunks:
@@ -332,46 +375,68 @@ def chunk_document_with_llm(text: str, metadata: Dict[str, Any]) -> Dict[str, An
                 total_tokens["prompt_tokens"] += usage.prompt_tokens
                 total_tokens["completion_tokens"] += usage.completion_tokens
                 total_tokens["total_tokens"] += usage.total_tokens
-            
+
     else:
         result = get_chunks_from_llm(text)
-        # Recompute positions on the full text using semantic markers
-        all_chunks_positions = _recompute_positions_from_markers(text, result["positions"])
-        raw_response = result["raw_response"]
-        if raw_response and hasattr(raw_response, 'usage'):
-            usage = raw_response.usage
-            total_tokens["prompt_tokens"] = usage.prompt_tokens
-            total_tokens["completion_tokens"] = usage.completion_tokens
-            total_tokens["total_tokens"] = usage.total_tokens
+        raw_response = result.get("raw_response")
+        if not raw_response:
+            use_sentence_fallback = True
+        else:
+            # Recompute positions on the full text using semantic markers
+            all_chunks_positions = _recompute_positions_from_markers(text, result["positions"])
+            if hasattr(raw_response, 'usage'):
+                usage = raw_response.usage
+                total_tokens["prompt_tokens"] = usage.prompt_tokens
+                total_tokens["completion_tokens"] = usage.completion_tokens
+                total_tokens["total_tokens"] = usage.total_tokens
 
-    # Merge overly small chunks to avoid excessively fine-grained splitting
-    all_chunks_positions = _merge_small_chunks(all_chunks_positions)
+    documents: List[Document] = []
+    if not use_sentence_fallback:
+        # Merge overly small chunks to avoid excessively fine-grained splitting
+        all_chunks_positions = _merge_small_chunks(all_chunks_positions)
 
-    # Optional: debug-log boundaries to verify LLM-provided indices
-    _debug_log_chunk_boundaries(text, all_chunks_positions)
+        # Optional: debug-log boundaries to verify LLM-provided indices
+        _debug_log_chunk_boundaries(text, all_chunks_positions)
 
-    # Create LlamaIndex Document objects from the chunks
-    documents = []
-    for i, chunk_pos in enumerate(all_chunks_positions):
-        start, end = chunk_pos.get("start"), chunk_pos.get("end")
-        if start is None or end is None or start > end or start > len(text) or end > len(text):
-            logger.warning(f"[chunker] Invalid chunk position received: {chunk_pos}, skipping.")
-            continue
-            
-        chunk_text = text[start:end]
-        if not chunk_text.strip():
-            logger.warning(f"[chunker] Empty chunk generated from positions: {chunk_pos}, skipping.")
-            continue
+        # Create LlamaIndex Document objects from the chunks
+        for i, chunk_pos in enumerate(all_chunks_positions):
+            start, end = chunk_pos.get("start"), chunk_pos.get("end")
+            if start is None or end is None or start > end or start > len(text) or end > len(text):
+                logger.warning(f"[chunker] Invalid chunk position received: {chunk_pos}, skipping.")
+                continue
 
-        chunk_metadata = metadata.copy()
-        chunk_metadata["chunk_number"] = i + 1
-        chunk_metadata["total_chunks"] = len(all_chunks_positions)
-        
-        doc = Document(text=chunk_text, metadata=chunk_metadata)
-        documents.append(doc)
+            chunk_text = text[start:end]
+            if not chunk_text.strip():
+                logger.warning(f"[chunker] Empty chunk generated from positions: {chunk_pos}, skipping.")
+                continue
 
-    if not documents:
-        logger.warning("[chunker] LLM chunking resulted in zero documents. Falling back to a single document for the whole text.")
-        documents = [Document(text=text, metadata=metadata)]
-        
+            chunk_metadata = metadata.copy()
+            chunk_metadata["chunk_number"] = i + 1
+            chunk_metadata["total_chunks"] = len(all_chunks_positions)
+
+            documents.append(Document(text=chunk_text, metadata=chunk_metadata))
+
+    if use_sentence_fallback or not documents:
+        if use_sentence_fallback:
+            logger.warning("[chunker] Falling back to SentenceSplitter due to LLM chunking failure.")
+        else:
+            logger.warning("[chunker] LLM chunking resulted in zero documents. Falling back to SentenceSplitter chunks.")
+        documents = _fallback_sentence_splitter_documents(text, metadata)
+
     return {"documents": documents, "tokens_used": total_tokens}
+
+
+def _fallback_sentence_splitter_documents(text: str, metadata: Dict[str, Any]) -> List[Document]:
+    """Use LlamaIndex SentenceSplitter as a deterministic fallback."""
+    splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=200)
+    nodes = splitter.get_nodes_from_documents([Document(text=text, metadata=metadata)])
+    if not nodes:
+        return [Document(text=text, metadata=metadata)]
+
+    documents: List[Document] = []
+    for idx, node in enumerate(nodes):
+        chunk_metadata = metadata.copy()
+        chunk_metadata["chunk_number"] = idx + 1
+        chunk_metadata["total_chunks"] = len(nodes)
+        documents.append(Document(text=node.get_content(), metadata=chunk_metadata))
+    return documents

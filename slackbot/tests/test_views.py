@@ -86,7 +86,7 @@ class SlackEventViewQuestionTests(TestCase):
 class SlackFileDownloadTests(TestCase):
     @mock.patch("slackbot.views.requests.get")
     @mock.patch("slackbot.views.settings.SLACK_BOT_TOKEN", "x-slack-token")
-    def test_downloads_single_file_to_temp_directory(self, _token_patch, mock_get):
+    def test_downloads_single_file_to_temp_directory(self, mock_get):
         tmpdir = tempfile.mkdtemp()
 
         event = {

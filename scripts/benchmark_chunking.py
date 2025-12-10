@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from dotenv import load_dotenv
 import sys
+# Load environment variables from .env file
+load_dotenv()
 
 # Add project root to the Python path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -101,8 +103,8 @@ def main():
         print(f"Error: File not found at '{file_to_test}'")
         return
 
-    # Load environment variables from .env file
-    load_dotenv()
+
+
 
     # Configure API keys and models for all services
     try:

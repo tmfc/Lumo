@@ -12,3 +12,4 @@ llama-index-llms-openai
 llama-index-vector-stores-qdrant
 pypdf
 docx2txt
+PyJWT
