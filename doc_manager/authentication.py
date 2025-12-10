@@ -31,7 +31,13 @@ class AdminTokenAuthentication(BaseAuthentication):
         if scheme.lower() != "bearer":
             raise AuthenticationFailed("Invalid authorization scheme.")
 
-        secret_key = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+        secret_key = os.getenv("JWT_SECRET_KEY")
+        if not secret_key:
+            from django.conf import settings
+            from django.core.exceptions import ImproperlyConfigured
+            if not settings.DEBUG:
+                raise ImproperlyConfigured("JWT_SECRET_KEY must be set in production environment.")
+            secret_key = "your-secret-key-for-development"
         try:
             payload = jwt.decode(token, secret_key, algorithms=["HS256"])
         except jwt.ExpiredSignatureError:
